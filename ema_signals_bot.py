@@ -3,7 +3,8 @@ import os
 import sys
 import asyncio
 from contextlib import suppress
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+import time
 
 import ccxt.async_support as ccxt
 import pandas as pd
@@ -35,13 +36,20 @@ TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
 SYMBOLS = [
     'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT',
-    'XRP/USDT', 'DOGE/USDT', 'AVAX/USDT', 'TON/USDT', 'ADA/USDT'
+    'XRP/USDT', 'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT',
+    'DOT/USDT', 'TRX/USDT', 'LINK/USDT', 'MATIC/USDT',
+    'LTC/USDT', 'SHIB/USDT', 'UNI/USDT', 'BCH/USDT',
+    'XLM/USDT', 'ATOM/USDT', 'XMR/USDT', 'HBAR/USDT',
+    'ICP/USDT', 'FIL/USDT', 'APT/USDT', 'NEAR/USDT',
+    'ARB/USDT', 'SUI/USDT', 'AAVE/USDT', 'GRT/USDT',
+    'ALGO/USDT'
 ]
 TIMEFRAME = '1h'
 LIMIT = 150
 RETRY_PERIOD = 3600  # 1 час для синхронизации с таймфреймом
 ERROR_THRESHOLD = 5  # Количество ошибок перед уведомлением
 STATUS_INTERVAL = 86400  # Уведомление о статусе раз в день (сек)
+PING_INTERVAL = 6 * 3600  # 6 часов в секундах
 MIN_WAIT_SECONDS = 10  # Минимальное время ожидания для синхронизации
 
 # ----- КАСТОМНЫЕ ИСКЛЮЧЕНИЯ -----
@@ -70,6 +78,18 @@ def send_message(bot, message):
     except Exception as e:
         logger.error(f'Ошибка отправки сообщения в Telegram: {e}')
 
+def send_critical_message(msg):
+    """Минималистичная отправка аварийного сообщения при фатальном сбое."""
+    try:
+        import telebot
+        TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+        TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+        if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
+            bot = telebot.TeleBot(TELEGRAM_TOKEN)
+            bot.send_message(TELEGRAM_CHAT_ID, msg)
+    except Exception as e:
+        logger.error(f'Ошибка при попытке аварийного уведомления: {e}')
+
 async def get_ohlcv(exchange, symbol):
     """Получает OHLCV-данные с биржи."""
     try:
@@ -88,7 +108,7 @@ async def get_ohlcv(exchange, symbol):
             logger.error(f'Данные для {symbol} содержат неположительные цены')
             raise ValueError(f'Non-positive prices in {symbol} data')
         last_timestamp = pd.to_datetime(df['timestamp'].iloc[-1], unit='ms', utc=True)
-        now = pd.Timestamp.utcnow()
+        now = pd.Timestamp.now(timezone.utc)
         time_diff = (now - last_timestamp).total_seconds()
         if time_diff > 7200:  # 2 часа
             logger.warning(f'Данные для {symbol} ({TIMEFRAME}) устарели: последняя свеча {last_timestamp} ({time_diff/3600:.1f} часов назад)')
@@ -186,7 +206,8 @@ async def main():
     last_signals_7_30 = {}
     last_signals_9_20_rsi = {}
     error_count = 0
-    last_status_time = datetime.utcnow()
+    last_status_time = datetime.now(timezone.utc)
+    last_ping_time = datetime.now(timezone.utc)
 
     # Проверка доступных пар
     try:
@@ -214,9 +235,9 @@ async def main():
 
     while True:
         try:
-            # Синхронизация с началом часа
-            now = datetime.utcnow()
-            next_hour = (now + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+            # Синхронизация с началом следующего часа (UTC)
+            now = datetime.now(timezone.utc)
+            next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
             wait_seconds = max((next_hour - now).total_seconds(), MIN_WAIT_SECONDS)
             logger.debug(f'Ожидание {wait_seconds:.1f} секунд до следующей проверки в {next_hour}.')
             await asyncio.sleep(wait_seconds)
@@ -264,15 +285,20 @@ async def main():
 
             logger.info(f'Успешно обработано {success_count}/{len(SYMBOLS)} пар')
 
-            # Сброс счетчика ошибок при частичном успехе
             if success_count > 0:
                 error_count = 0
 
             # Периодическое уведомление о статусе
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             if (now - last_status_time).total_seconds() >= STATUS_INTERVAL:
                 send_message(bot, f'Бот работает. Проверено {success_count}/{len(SYMBOLS)} пар.')
                 last_status_time = now
+
+            # Пинг каждые 6 часов
+            if (now - last_ping_time).total_seconds() >= PING_INTERVAL:
+                send_message(bot, 'Бот сигналов ЕМА на страже!')
+                logger.info('Отправлено пинг-сообщение (6ч).')
+                last_ping_time = now
 
         except Exception as error:
             error_count += 1
@@ -285,9 +311,16 @@ async def main():
     await exchange.close()
 
 if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info('Бот остановлен вручную.')
-    except Exception as e:
-        logger.critical(f'Критическая ошибка: {e}')
+    while True:
+        try:
+            asyncio.run(main())
+            break
+        except KeyboardInterrupt:
+            logger.info('Бот остановлен вручную.')
+            send_critical_message('Бот EMA остановлен вручную (KeyboardInterrupt).')
+            break
+        except Exception as e:
+            err_text = f'КРИТИЧЕСКАЯ ОШИБКА (фатальный сбой): {e}'
+            logger.critical(err_text, exc_info=True)
+            send_critical_message(f'EMA БОТ аварийно завершился: {e}')
+            time.sleep(60)
