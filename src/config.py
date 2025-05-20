@@ -1,0 +1,26 @@
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+TP_PERCENT = float(os.getenv('TAKE_PROFIT_PERCENT', '2.0'))
+SL_PERCENT = float(os.getenv('STOP_LOSS_PERCENT', '1.0'))
+
+SYMBOLS = [
+    'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT',
+    'XRP/USDT', 'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT',
+    'DOT/USDT', 'TRX/USDT', 'LINK/USDT', 'SHIB/USDT',
+    'UNI/USDT', 'XLM/USDT', 'ATOM/USDT', 'ICP/USDT',
+    'FIL/USDT', 'APT/USDT', 'NEAR/USDT', 'ARB/USDT',
+    'SUI/USDT', 'AAVE/USDT', 'OP/USDT', 'PEPE/USDT',
+    'STX/USDT', 'APE/USDT', 'MOCA/USDT', 'POL/USDT',
+    'ZK/USDT', 'ONDO/USDT'
+]
+TIMEFRAME = '1h'
+LIMIT = 150
+ERROR_THRESHOLD = 5
+STATUS_INTERVAL = 86400
+PING_INTERVAL = 6 * 3600
+MIN_WAIT_SECONDS = 10
