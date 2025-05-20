@@ -59,8 +59,8 @@ PING_INTERVAL = 6 * 3600  # Интервал пинга (6 часов, в сек
 MIN_WAIT_SECONDS = 10  # Минимальное время ожидания для синхронизации
 
 # Загрузка процентов тейк-профита и стоп-лосса из переменных окружения
-TP_PERCENT = float(os.getenv('TAKE_PROFIT_PERCENT', 2.0))  # Процент тейк-профита по умолчанию
-SL_PERCENT = float(os.getenv('STOP_LOSS_PERCENT', 1.0))  # Процент стоп-лосса по умолчанию
+TP_PERCENT = os.getenv('TAKE_PROFIT_PERCENT')  # Процент тейк-профита
+SL_PERCENT = os.getenv('STOP_LOSS_PERCENT')  # Процент стоп-лосса
 
 # ----- КАСТОМНЫЕ ИСКЛЮЧЕНИЯ -----
 class MissingTokenError(Exception):
@@ -91,30 +91,60 @@ def setup_bot_commands():
 
 # ----- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ -----
 def check_tokens():
-    """Проверяет наличие и корректность переменных окружения для Telegram."""
-    missing = [k for k in ['TELEGRAM_TOKEN', 'TELEGRAM_CHAT_ID'] if not globals()[k]]
+    """Проверяет наличие и корректность всех переменных окружения."""
+    logger.debug("Проверка переменных окружения")
+    
+    # Список всех необходимых переменных
+    required_vars = {
+        'TELEGRAM_TOKEN': TELEGRAM_TOKEN,
+        'TELEGRAM_CHAT_ID': TELEGRAM_CHAT_ID,
+        'TAKE_PROFIT_PERCENT': TP_PERCENT,
+        'STOP_LOSS_PERCENT': SL_PERCENT
+    }
+    
+    # Проверка на отсутствие переменных
+    missing = [key for key, value in required_vars.items() if not value]
     if missing:
-        logger.critical(f'Бот остановлен. Отсутствуют токены: {", ".join(missing)}')
-        raise MissingTokenError(f'Отсутствуют токены: {missing}')
+        error_msg = f'Бот остановлен. Отсутствуют переменные окружения: {", ".join(missing)}'
+        logger.critical(error_msg)
+        raise MissingTokenError(error_msg)
+    
+    # Проверка формата TELEGRAM_CHAT_ID
     try:
-        int(TELEGRAM_CHAT_ID)  # Проверка, что CHAT_ID — число
+        int(TELEGRAM_CHAT_ID)  # Должно быть числом
+        logger.debug(f"TELEGRAM_CHAT_ID корректен: {TELEGRAM_CHAT_ID}")
     except ValueError:
-        logger.critical('TELEGRAM_CHAT_ID должен быть числом.')
-        raise MissingTokenError('Неверный формат TELEGRAM_CHAT_ID')
+        error_msg = 'TELEGRAM_CHAT_ID должен быть числом.'
+        logger.critical(error_msg)
+        raise MissingTokenError(error_msg)
+    
+    # Проверка формата TAKE_PROFIT_PERCENT
+    try:
+        tp = float(TP_PERCENT)
+        if tp <= 0:
+            raise ValueError("TAKE_PROFIT_PERCENT должен быть положительным числом")
+        logger.debug(f"TAKE_PROFIT_PERCENT корректен: {TP_PERCENT}")
+    except ValueError as e:
+        error_msg = f'Неверный формат TAKE_PROFIT_PERCENT: {e}'
+        logger.critical(error_msg)
+        raise MissingTokenError(error_msg)
+    
+    # Проверка формата STOP_LOSS_PERCENT
+    try:
+        sl = float(SL_PERCENT)
+        if sl <= 0:
+            raise ValueError("STOP_LOSS_PERCENT должен быть положительным числом")
+        logger.debug(f"STOP_LOSS_PERCENT корректен: {SL_PERCENT}")
+    except ValueError as e:
+        error_msg = f'Неверный формат STOP_LOSS_PERCENT: {e}'
+        logger.critical(error_msg)
+        raise MissingTokenError(error_msg)
 
 def calc_oco_prices(direction, price, tp_perc=TP_PERCENT, sl_perc=SL_PERCENT):
     """
     Рассчитывает цены для OCO-ордера (тейк-профит и стоп-лосс).
-    
-    Аргументы:
-        direction (str): Направление сделки ("LONG" или "SHORT")
-        price (float): Текущая рыночная цена
-        tp_perc (float): Процент тейк-профита
-        sl_perc (float): Процент стоп-лосса
-    
-    Возвращает:
-        tuple: (цена тейк-профита, цена триггера стоп-лосса, рыночная цена стоп-лосса)
     """
+    logger.debug(f"Расчёт OCO для {direction}, цена: {price}, TP%: {tp_perc}, SL%: {sl_perc}")
     if direction.startswith('LONG'):
         tp_price = round(price * (1 + tp_perc/100), 4)
         sl_trigger = round(price * (1 - sl_perc/100), 4)
@@ -128,19 +158,6 @@ def calc_oco_prices(direction, price, tp_perc=TP_PERCENT, sl_perc=SL_PERCENT):
 def format_signal_message(symbol, signal_type, price, tp_price, sl_trigger, sl_market, timeframe, rsi_data=None):
     """
     Форматирует сообщение о торговом сигнале с использованием Markdown для Telegram.
-    
-    Аргументы:
-        symbol (str): Символ торговой пары
-        signal_type (str): Тип сигнала (например, LONG, SHORT, LONG (RSI))
-        price (float): Текущая цена
-        tp_price (float): Цена тейк-профита
-        sl_trigger (float): Цена триггера стоп-лосса
-        sl_market (float): Рыночная цена стоп-лосса
-        timeframe (str): Таймфрейм графика
-        rsi_data (tuple): Опционально (предыдущий RSI, текущий RSI)
-    
-    Возвращает:
-        str: Отформатированное сообщение в формате Markdown
     """
     message = f"**📊 {signal_type} Сигнал для {symbol}**\n"
     message += f"*Цена*: `{price:.4f}`\n"
@@ -155,39 +172,39 @@ def format_signal_message(symbol, signal_type, price, tp_price, sl_trigger, sl_m
     message += f"- *Стоп-лосс (Триггер)*: `{sl_trigger:.4f}`\n"
     message += f"- *Стоп-лосс (Рыночная)*: `{sl_market:.4f}`\n"
     
+    logger.debug(f"Сформировано сообщение: {message}")
     return message
 
 def send_message(message):
     """Отправляет сообщение в Telegram с логированием ошибок."""
-    logger.debug(f'Отправка сообщения: {message}')
+    logger.debug(f'Попытка отправки сообщения: {message}')
     try:
         bot.send_message(TELEGRAM_CHAT_ID, message, parse_mode='Markdown')
-        logger.info('Сообщение отправлено в Telegram.')
+        logger.info('Сообщение успешно отправлено в Telegram.')
     except Exception as e:
         logger.error(f'Ошибка отправки сообщения в Telegram: {e}')
 
 def send_critical_message(msg):
     """Отправляет аварийное сообщение при критическом сбое."""
+    logger.debug(f'Попытка отправки критического сообщения: {msg}')
     try:
         if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
             bot = telebot.TeleBot(TELEGRAM_TOKEN)
             bot.send_message(TELEGRAM_CHAT_ID, msg, parse_mode='Markdown')
+            logger.info('Критическое сообщение отправлено.')
     except Exception as e:
         logger.error(f'Ошибка отправки аварийного уведомления: {e}')
 
 async def get_ohlcv(exchange, symbol):
     """
-    Получает OHLCV-данные с биржи с проверкой их валидности.
-    
-    Аргументы:
-        exchange: Экземпляр биржи CCXT
-        symbol (str): Символ торговой пары
-    
-    Возвращает:
-        pandas.DataFrame: Данные OHLCV
+    Получает OHLCV-данные с биржи с проверкой их валидности и тайм-аутом.
     """
+    logger.debug(f'Получение OHLCV для {symbol}')
     try:
-        data = await exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=LIMIT)
+        data = await asyncio.wait_for(
+            exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=LIMIT),
+            timeout=30.0  # Тайм-аут 30 секунд
+        )
         if not data:
             logger.error(f'Нет данных для {symbol}')
             raise ValueError(f'Нет данных для {symbol}')
@@ -216,12 +233,16 @@ async def get_ohlcv(exchange, symbol):
             )
         
         return df
+    except asyncio.TimeoutError:
+        logger.error(f'Тайм-аут при получении OHLCV для {symbol}: превышено время ожидания (30 секунд)')
+        raise
     except Exception as e:
         logger.error(f'Ошибка получения котировок для {symbol}: {e}')
         raise
 
 async def validate_symbols(exchange, symbols):
     """Проверяет доступность торговых пар на бирже."""
+    logger.debug("Проверка доступности торговых пар")
     try:
         markets = await exchange.load_markets()
         valid_symbols = [s for s in symbols if s in markets]
@@ -229,6 +250,7 @@ async def validate_symbols(exchange, symbols):
             logger.warning(f'Недоступные пары: {set(symbols) - set(valid_symbols)}')
         if not valid_symbols:
             raise ValueError('Нет доступных торговых пар')
+        logger.debug(f"Доступные пары: {valid_symbols}")
         return valid_symbols
     except Exception as e:
         logger.critical(f'Ошибка загрузки торговых пар: {e}')
@@ -236,12 +258,14 @@ async def validate_symbols(exchange, symbols):
 
 def calc_ema(df, period):
     """Вычисляет экспоненциальную скользящую среднюю (EMA)."""
+    logger.debug(f"Расчёт EMA с периодом {period}")
     if period <= 0:
         raise ValueError('Период EMA должен быть положительным')
     return df['close'].ewm(span=period, adjust=False).mean()
 
 def calc_rsi(df, period=14):
     """Вычисляет индекс относительной силы (RSI) с защитой от деления на ноль."""
+    logger.debug(f"Расчёт RSI с периодом {period}")
     delta = df['close'].diff()
     up = delta.clip(lower=0)
     down = -delta.clip(upper=0)
@@ -254,10 +278,8 @@ def calc_rsi(df, period=14):
 def check_signal_ema7_30(df):
     """
     Проверяет торговые сигналы по стратегии EMA7/EMA30.
-    
-    Возвращает:
-        str или None: LONG, SHORT или None, если сигнала нет
     """
+    logger.debug("Проверка сигнала EMA7/EMA30")
     if len(df) < LIMIT:
         logger.warning(f'Недостаточно данных для EMA7/EMA30: {len(df)} свечей')
         return None
@@ -270,6 +292,7 @@ def check_signal_ema7_30(df):
         df['close'].iloc[-1] > df['ema7'].iloc[-1] and
         df['close'].iloc[-1] > df['ema30'].iloc[-1]
     ):
+        logger.info("Обнаружен LONG сигнал по EMA7/EMA30")
         return "LONG"
     elif (
         df['ema7'].iloc[-2] > df['ema30'].iloc[-2] and
@@ -277,16 +300,15 @@ def check_signal_ema7_30(df):
         df['close'].iloc[-1] < df['ema7'].iloc[-1] and
         df['close'].iloc[-1] < df['ema30'].iloc[-1]
     ):
+        logger.info("Обнаружен SHORT сигнал по EMA7/EMA30")
         return "SHORT"
     return None
 
 def check_signal_ema9_20_rsi(df):
     """
     Проверяет торговые сигналы по стратегии EMA9/EMA20 + RSI.
-    
-    Возвращает:
-        str или None: LONG (RSI), SHORT (RSI) или None, если сигнала нет
     """
+    logger.debug("Проверка сигнала EMA9/EMA20+RSI")
     if len(df) < LIMIT:
         logger.warning(f'Недостаточно данных для EMA9/EMA20+RSI: {len(df)} свечей')
         return None
@@ -304,6 +326,7 @@ def check_signal_ema9_20_rsi(df):
         df['rsi'].iloc[-2] > 55 and
         df['rsi'].iloc[-1] <= 55
     ):
+        logger.info("Обнаружен LONG (RSI) сигнал по EMA9/EMA20")
         return "LONG (RSI)"
     elif (
         df['ema9'].iloc[-2] > df['ema20'].iloc[-2] and
@@ -311,6 +334,7 @@ def check_signal_ema9_20_rsi(df):
         df['rsi'].iloc[-2] < 45 and
         df['rsi'].iloc[-1] >= 45
     ):
+        logger.info("Обнаружен SHORT (RSI) сигнал по EMA9/EMA20")
         return "SHORT (RSI)"
     return None
 
@@ -318,8 +342,10 @@ def check_signal_ema9_20_rsi(df):
 @bot.message_handler(commands=['help'])
 def send_help(message):
     """Отправляет список доступных команд с описаниями."""
+    logger.debug(f"Получена команда /help от chat_id: {message.chat.id}")
     if str(message.chat.id) != TELEGRAM_CHAT_ID:
         bot.reply_to(message, "Несанкционированный доступ.")
+        logger.warning(f"Несанкционированный доступ: chat_id {message.chat.id} != {TELEGRAM_CHAT_ID}")
         return
     help_text = (
         "**📋 Доступные команды бота**\n\n"
@@ -328,19 +354,24 @@ def send_help(message):
         "`/set_sl` - Установить процент стоп-лосса (например, 1.0)"
     )
     bot.reply_to(message, help_text, parse_mode='Markdown')
+    logger.info("Команда /help обработана")
 
 @bot.message_handler(commands=['set_tp'])
 def set_take_profit(message):
     """Запускает процесс изменения процента тейк-профита."""
+    logger.debug(f"Получена команда /set_tp от chat_id: {message.chat.id}")
     if str(message.chat.id) != TELEGRAM_CHAT_ID:
         bot.reply_to(message, "Несанкционированный доступ.")
+        logger.warning(f"Несанкционированный доступ: chat_id {message.chat.id} != {TELEGRAM_CHAT_ID}")
         return
     bot.set_state(message.from_user.id, SettingsState.waiting_for_tp, message.chat.id)
     bot.reply_to(message, "Введите новый процент тейк-профита (например, 2.5):")
+    logger.info("Запрошено изменение тейк-профита")
 
 @bot.message_handler(state=SettingsState.waiting_for_tp)
 def process_tp(message):
     """Обрабатывает и проверяет введенный процент тейк-профита."""
+    logger.debug(f"Получен ввод тейк-профита: {message.text}")
     try:
         new_tp = float(message.text)
         if new_tp <= 0:
@@ -352,19 +383,24 @@ def process_tp(message):
         bot.delete_state(message.from_user.id, message.chat.id)
     except ValueError:
         bot.reply_to(message, "Неверный ввод. Введите положительное число (например, 2.5).")
+        logger.error(f"Неверный ввод тейк-профита: {message.text}")
 
 @bot.message_handler(commands=['set_sl'])
 def set_stop_loss(message):
     """Запускает процесс изменения процента стоп-лосса."""
+    logger.debug(f"Получена команда /set_sl от chat_id: {message.chat.id}")
     if str(message.chat.id) != TELEGRAM_CHAT_ID:
         bot.reply_to(message, "Несанкционированный доступ.")
+        logger.warning(f"Несанкционированный доступ: chat_id {message.chat.id} != {TELEGRAM_CHAT_ID}")
         return
     bot.set_state(message.from_user.id, SettingsState.waiting_for_sl, message.chat.id)
     bot.reply_to(message, "Введите новый процент стоп-лосса (например, 1.0):")
+    logger.info("Запрошено изменение стоп-лосса")
 
 @bot.message_handler(state=SettingsState.waiting_for_sl)
 def process_sl(message):
     """Обрабатывает и проверяет введенный процент стоп-лосса."""
+    logger.debug(f"Получен ввод стоп-лосса: {message.text}")
     try:
         new_sl = float(message.text)
         if new_sl <= 0:
@@ -376,11 +412,18 @@ def process_sl(message):
         bot.delete_state(message.from_user.id, message.chat.id)
     except ValueError:
         bot.reply_to(message, "Неверный ввод. Введите положительное число (например, 1.0).")
+        logger.error(f"Неверный ввод стоп-лосса: {message.text}")
 
 async def main():
     """Основная логика бота для обработки торговых сигналов."""
+    logger.debug("Запуск основной функции main()")
     check_tokens()
+    # Приведение TP_PERCENT и SL_PERCENT к float после проверки
+    global TP_PERCENT, SL_PERCENT
+    TP_PERCENT = float(TP_PERCENT)
+    SL_PERCENT = float(SL_PERCENT)
     exchange = ccxt.bybit({'enableRateLimit': True})  # Инициализация биржи Bybit
+    logger.debug("Инициализирована биржа Bybit")
     last_signals_7_30 = {}  # Хранение последних сигналов EMA7/30
     last_signals_9_20_rsi = {}  # Хранение последних сигналов EMA9/20+RSI
     error_count = 0  # Счетчик ошибок
@@ -391,6 +434,7 @@ async def main():
     setup_bot_commands()
 
     # Запуск опроса Telegram-бота в фоновом режиме
+    logger.debug("Запуск infinity_polling для Telegram-бота")
     asyncio.create_task(bot.infinity_polling())
 
     # Проверка доступных торговых пар
@@ -398,8 +442,11 @@ async def main():
         global SYMBOLS
         SYMBOLS = await validate_symbols(exchange, SYMBOLS)
         logger.info(f'Доступные пары: {SYMBOLS}')
+        send_message(f'✅ *Бот запущен*: Проверены торговые пары ({len(SYMBOLS)})')
     except Exception as e:
-        send_message(f'❌ *Критическая ошибка*: Не удалось загрузить торговые пары: {e}')
+        error_msg = f'❌ *Критическая ошибка*: Не удалось загрузить торговые пары: {e}'
+        logger.critical(error_msg)
+        send_message(error_msg)
         await exchange.close()
         return
 
@@ -410,8 +457,9 @@ async def main():
         logger.info(f'Успешный тестовый запрос для {test_symbol}')
         send_message(f'✅ *Бот запущен*: Успешный тестовый запрос для {test_symbol}')
     except Exception as e:
-        logger.critical(f'Не удалось подключиться к бирже: {e}')
-        send_message(f'❌ *Критическая ошибка*: Не удалось подключиться к бирже: {e}')
+        error_msg = f'❌ *Критическая ошибка*: Не удалось подключиться к бирже: {e}'
+        logger.critical(error_msg)
+        send_message(error_msg)
         await exchange.close()
         return
 
@@ -427,6 +475,7 @@ async def main():
             await asyncio.sleep(wait_seconds)
 
             # Асинхронное получение данных для всех пар
+            logger.debug("Начало обработки торговых пар")
             tasks = [get_ohlcv(exchange, symbol) for symbol in SYMBOLS]
             results = await asyncio.gather(*tasks, return_exceptions=True)
             success_count = 0
@@ -474,6 +523,7 @@ async def main():
             now = datetime.now(timezone.utc)
             if (now - last_status_time).total_seconds() >= STATUS_INTERVAL:
                 send_message(f'🔔 *Статус бота*: Обработано {success_count}/{len(SYMBOLS)} пар')
+                logger.info("Отправлен статус бота")
                 last_status_time = now
 
             # Отправка периодического пинга
@@ -486,13 +536,16 @@ async def main():
             error_count += 1
             logger.error(f'Критическая ошибка: {error}')
             if error_count >= ERROR_THRESHOLD:
-                send_message(f'❌ *Критическая ошибка*: Бот остановлен из-за повторяющихся сбоев: {error}')
+                error_msg = f'❌ *Критическая ошибка*: Бот остановлен из-за повторяющихся сбоев: {error}'
+                send_message(error_msg)
                 logger.critical('Бот остановлен из-за превышения порога ошибок')
                 break
 
     await exchange.close()
+    logger.debug("Биржа закрыта")
 
 if __name__ == '__main__':
+    logger.debug("Запуск программы")
     while True:
         try:
             asyncio.run(main())
